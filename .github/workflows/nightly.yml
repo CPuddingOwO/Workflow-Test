@@ -25,11 +25,9 @@ jobs:
       need_build: ${{ steps.resolve.outputs.need_build }}
 
     steps:
-      - name: Resolve main HEAD SHA
-        id: sha
+      - name: Resolve SHA
         run: |
-          SHA=$(git ls-remote origin refs/heads/main | cut -f1)
-          echo "sha=$SHA" >> $GITHUB_OUTPUT
+          echo "sha=${GITHUB_SHA}" >> $GITHUB_OUTPUT
 
       - name: Resolve existing Build run
         id: resolve
