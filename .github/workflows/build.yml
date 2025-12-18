@@ -49,3 +49,4 @@ jobs:
           name: build-${{ github.sha }}-${{ matrix.target }}
           path: dist/${{ matrix.target }}
           retention-days: 14
+
