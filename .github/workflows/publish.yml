@@ -1,11 +1,17 @@
-name: Nightly
+name: Publish
 
 on:
-  schedule:
-    - cron: "0 2 * * *"
-  push:
-    branches:
-      - main
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: Commit SHA or tag to release
+        required: true
+      tag:
+        description: Release tag (e.g. v1.2.3)
+        required: true
+      title:
+        description: Release title
+        required: false
 
 permissions:
   contents: write
@@ -25,14 +31,11 @@ jobs:
       need_build: ${{ steps.resolve.outputs.need_build }}
 
     steps:
-      - name: Resolve main HEAD SHA
+      - name: Resolve target SHA
         id: sha
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          REPO: ${{ github.repository }}
+        shell: bash
         run: |
-          SHA=$(gh api repos/$REPO/branches/main --jq '.commit.sha')
-          echo "sha=$SHA" >> $GITHUB_OUTPUT
+          echo "sha=${{ inputs.ref }}" >> $GITHUB_OUTPUT
 
       - name: Resolve existing Build run
         id: resolve
@@ -81,8 +84,8 @@ jobs:
     with:
       ref: ${{ needs.prepare.outputs.sha }}
 
-  nightly:
-    name: Nightly Release
+  release:
+    name: Publish Release
     needs: [prepare, build]
     runs-on: ubuntu-latest
 
@@ -105,12 +108,11 @@ jobs:
             --repo "$REPO" \
             --pattern "build-${{ needs.prepare.outputs.sha }}-*"
 
-      - name: Create Nightly prerelease
+      - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: nightly-${{ needs.prepare.outputs.sha }}
-          name: Nightly ${{ needs.prepare.outputs.sha }}
-          prerelease: true
+          tag_name: ${{ inputs.tag }}
+          name: ${{ inputs.title || inputs.tag }}
+          prerelease: false
           files: |
             build-*/**
-
