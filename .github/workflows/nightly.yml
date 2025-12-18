@@ -25,9 +25,14 @@ jobs:
       need_build: ${{ steps.resolve.outputs.need_build }}
 
     steps:
-      - name: Resolve SHA
+      - name: Resolve main HEAD SHA
+        id: sha
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
         run: |
-          echo "sha=${GITHUB_SHA}" >> $GITHUB_OUTPUT
+          SHA=$(gh api repos/$REPO/branches/main --jq '.commit.sha')
+          echo "sha=$SHA" >> $GITHUB_OUTPUT
 
       - name: Resolve existing Build run
         id: resolve
