@@ -44,15 +44,14 @@ jobs:
         run: |
           set -e
 
-          WORKFLOW_ID=build.yml
-          
-          # 1. Find successful run for this SHA
-          RUN_ID=$(gh api repos/$REPO/actions/workflows/$WORKFLOW_ID/runs \
+          # 1. Find successful Build run by head_sha
+          RUN_ID=$(gh api repos/$REPO/actions/runs \
             -f status=completed \
-            -f conclusion=success \
-            -f per_page=20 \
+            -f per_page=30 \
             --jq '.workflow_runs[]
+                  | select(.name=="Build")
                   | select(.head_sha=="'"$TARGET_SHA"'")
+                  | select(.conclusion=="success")
                   | .id' \
             | head -n 1)
           
