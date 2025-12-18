@@ -1,0 +1,119 @@
+name: Nightly
+
+on:
+  schedule:
+    - cron: "0 2 * * *"
+  push:
+    branches:
+      - main
+
+permissions:
+  contents: write
+  actions: read
+
+env:
+  BUILD_WORKFLOW_NAME: Build
+
+jobs:
+  prepare:
+    name: Resolve Build Artifact
+    runs-on: ubuntu-latest
+
+    outputs:
+      sha: ${{ steps.sha.outputs.sha }}
+      build_run_id: ${{ steps.resolve.outputs.build_run_id }}
+      need_build: ${{ steps.resolve.outputs.need_build }}
+
+    steps:
+      - name: Resolve main HEAD SHA
+        id: sha
+        run: |
+          SHA=$(git ls-remote origin refs/heads/main | cut -f1)
+          echo "sha=$SHA" >> $GITHUB_OUTPUT
+
+      - name: Resolve existing Build run
+        id: resolve
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+          TARGET_SHA: ${{ steps.sha.outputs.sha }}
+        shell: bash
+        run: |
+          set -e
+
+          # 1. Get Build workflow ID
+          WORKFLOW_ID=$(gh api repos/$REPO/actions/workflows \
+            --jq '.workflows[] | select(.name=="'"$BUILD_WORKFLOW_NAME"'") | .id')
+
+          if [ -z "$WORKFLOW_ID" ]; then
+            echo "need_build=true" >> $GITHUB_OUTPUT
+            exit 0
+          fi
+
+          # 2. Find successful run for this SHA
+          RUN_ID=$(gh api repos/$REPO/actions/workflows/$WORKFLOW_ID/runs \
+            -f status=completed \
+            -f conclusion=success \
+            -f per_page=20 \
+            --jq '.workflow_runs[]
+                  | select(.head_sha=="'"$TARGET_SHA"'")
+                  | .id' \
+            | head -n 1)
+
+          if [ -z "$RUN_ID" ]; then
+            echo "need_build=true" >> $GITHUB_OUTPUT
+            exit 0
+          fi
+
+          # 3. Verify artifacts exist
+          ART_COUNT=$(gh api repos/$REPO/actions/runs/$RUN_ID/artifacts \
+            --jq '.total_count')
+
+          if [ "$ART_COUNT" -eq 0 ]; then
+            echo "need_build=true" >> $GITHUB_OUTPUT
+            exit 0
+          fi
+
+          echo "need_build=false" >> $GITHUB_OUTPUT
+          echo "build_run_id=$RUN_ID" >> $GITHUB_OUTPUT
+
+  build:
+    name: Trigger Build (if needed)
+    needs: prepare
+    if: needs.prepare.outputs.need_build == 'true'
+    uses: ./.github/workflows/build.yml
+    with:
+      ref: ${{ needs.prepare.outputs.sha }}
+
+  nightly:
+    name: Nightly Release
+    needs: [prepare, build]
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Resolve Build Run ID
+        shell: bash
+        run: |
+          if [ "${{ needs.prepare.outputs.need_build }}" = "true" ]; then
+            echo "BUILD_RUN_ID=${{ github.run_id }}" >> $GITHUB_ENV
+          else
+            echo "BUILD_RUN_ID=${{ needs.prepare.outputs.build_run_id }}" >> $GITHUB_ENV
+          fi
+
+      - name: Download build artifacts
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+        run: |
+          gh run download "$BUILD_RUN_ID" \
+            --repo "$REPO" \
+            --pattern "build-${{ needs.prepare.outputs.sha }}-*"
+
+      - name: Create Nightly prerelease
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: nightly-${{ needs.prepare.outputs.sha }}
+          name: Nightly ${{ needs.prepare.outputs.sha }}
+          prerelease: true
+          files: |
+            build-*/**
