@@ -6,19 +6,16 @@ on:
   push:
     branches:
       - main
+  workflow_dispatch:
 
 permissions:
   contents: write
   actions: read
 
-env:
-  BUILD_WORKFLOW_NAME: Build
-
 jobs:
   prepare:
     name: Resolve Build Artifact
     runs-on: ubuntu-latest
-
     outputs:
       sha: ${{ steps.sha.outputs.sha }}
       build_run_id: ${{ steps.resolve.outputs.build_run_id }}
@@ -31,8 +28,13 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           REPO: ${{ github.repository }}
         run: |
-          SHA=$(gh api repos/$REPO/branches/main --jq '.commit.sha')
-          echo "sha=$SHA" >> $GITHUB_OUTPUT
+          # Use the commit that triggered the workflow, or main HEAD for schedule
+          if [ "${{ github.event_name }}" == "push" ]; then
+            echo "sha=${{ github.sha }}" >> $GITHUB_OUTPUT
+          else
+            SHA=$(gh api repos/$REPO/branches/main --jq '.commit.sha')
+            echo "sha=$SHA" >> $GITHUB_OUTPUT
+          fi
 
       - name: Resolve existing Build run
         id: resolve
@@ -40,30 +42,25 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           REPO: ${{ github.repository }}
           TARGET_SHA: ${{ steps.sha.outputs.sha }}
-        shell: bash
         run: |
-          set -e
+          # Find latest successful run for the commit on 'build.yml'
+          # This is more robust than searching artifacts directly
+          RUN_ID=$(gh run list --repo $REPO \
+            --workflow build.yml \
+            --commit $TARGET_SHA \
+            --status success \
+            --limit 1 \
+            --json databaseId \
+            --jq '.[0].databaseId')
 
-          # 1. Look for artifact by SHA
-          ART_ID=$(gh api repos/$REPO/actions/artifacts \
-            -f per_page=50 \
-            --jq '.artifacts[]
-                  | select(.name | startswith("build-'"$TARGET_SHA"'"))
-                  | .id' \
-            | head -n 1)
-
-          if [ -z "$ART_ID" ]; then
+          if [ -z "$RUN_ID" ]; then
+            echo "No existing build found for SHA $TARGET_SHA"
             echo "need_build=true" >> $GITHUB_OUTPUT
-            exit 0
+          else
+            echo "Found existing build run: $RUN_ID"
+            echo "need_build=false" >> $GITHUB_OUTPUT
+            echo "build_run_id=$RUN_ID" >> $GITHUB_OUTPUT
           fi
-
-          # 2. Get the workflow run ID from the artifact
-          BUILD_RUN_ID=$(gh api repos/$REPO/actions/artifacts/$ART_ID --jq '.workflow_run.id')
-
-          echo "need_build=false" >> $GITHUB_OUTPUT
-          echo "artifact_id=$ART_ID" >> $GITHUB_OUTPUT
-          echo "build_run_id=$BUILD_RUN_ID" >> $GITHUB_OUTPUT
-
 
   build:
     name: Trigger Build (if needed)
@@ -75,66 +72,38 @@ jobs:
 
   nightly:
     name: Nightly Release
-    needs: [prepare]
+    needs: [prepare, build]
     runs-on: ubuntu-latest
+    # Run if prepare succeeded, and build either succeeded (ran) or was skipped (already built)
+    if: always() && needs.prepare.result == 'success' && (needs.build.result == 'success' || needs.build.result == 'skipped')
 
     steps:
-      - name: Resolve Build Run ID
-        shell: bash
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          REPO: ${{ github.repository }}
-        run: |
-          if [ "${{ needs.prepare.outputs.need_build }}" = "true" ]; then
-            # Build was triggered - find and wait for its workflow run
-            TARGET_SHA="${{ needs.prepare.outputs.sha }}"
-
-            echo "Waiting for build workflow to start..."
-            for i in {1..30}; do
-              BUILD_RUN_ID=$(gh api repos/$REPO/actions/workflows/build.yml/runs \
-                -f per_page=10 \
-                --jq '.workflow_runs[]
-                      | select(.head_sha == "'"$TARGET_SHA"'" and .status != "completed")
-                      | .id' \
-                | head -n 1)
-
-              if [ -n "$BUILD_RUN_ID" ]; then
-                echo "Found build run: $BUILD_RUN_ID"
-                break
-              fi
-
-              sleep 2
-            done
-
-            if [ -z "$BUILD_RUN_ID" ]; then
-              echo "Error: Could not find build run for SHA $TARGET_SHA"
-              exit 1
-            fi
-
-            # Wait for the build to complete
-            echo "Waiting for build run $BUILD_RUN_ID to complete..."
-            gh run watch $BUILD_RUN_ID --repo $REPO --exit-status
-
-            echo "BUILD_RUN_ID=$BUILD_RUN_ID" >> $GITHUB_ENV
-          else
-            echo "BUILD_RUN_ID=${{ needs.prepare.outputs.build_run_id }}" >> $GITHUB_ENV
-          fi
-
       - name: Download build artifacts
+        uses: actions/download-artifact@v4
+        with:
+          # If 'build' job was skipped, we download from the found external run ID.
+          # If 'build' job ran, we download from the current workflow run (github.run_id).
+          run-id: ${{ needs.build.result == 'skipped' && needs.prepare.outputs.build_run_id || github.run_id }}
+          pattern: "build-${{ needs.prepare.outputs.sha }}-*"
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Delete old Nightly Release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           REPO: ${{ github.repository }}
         run: |
-          gh run download "$BUILD_RUN_ID" \
-            --repo "$REPO" \
-            --pattern "build-${{ needs.prepare.outputs.sha }}-*"
+          echo "Deleting existing 'nightly' release and tag..."
+          # Deleting the release with --cleanup-tag removes both the release and the tag.
+          # This effectively cleans up all old artifacts.
+          gh release delete nightly --repo $REPO --cleanup-tag -y || true
 
-      - name: Create Nightly prerelease
+      - name: Create Nightly Release
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: nightly-${{ needs.prepare.outputs.sha }}
-          name: Nightly ${{ needs.prepare.outputs.sha }}
+          tag_name: nightly
+          target_commitish: ${{ needs.prepare.outputs.sha }}
+          name: Nightly Build ${{ needs.prepare.outputs.sha }}
+          body: "Nightly build for commit ${{ needs.prepare.outputs.sha }}"
           prerelease: true
           files: |
             build-*/**
-
