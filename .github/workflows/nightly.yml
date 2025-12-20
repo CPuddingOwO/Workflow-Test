@@ -43,7 +43,7 @@ jobs:
         shell: bash
         run: |
           set -e
-          
+
           # 1. Look for artifact by SHA
           ART_ID=$(gh api repos/$REPO/actions/artifacts \
             -f per_page=50 \
@@ -51,15 +51,15 @@ jobs:
                   | select(.name | startswith("build-'"$TARGET_SHA"'"))
                   | .id' \
             | head -n 1)
-          
+
           if [ -z "$ART_ID" ]; then
             echo "need_build=true" >> $GITHUB_OUTPUT
             exit 0
           fi
-          
+
           # 2. Get the workflow run ID from the artifact
           BUILD_RUN_ID=$(gh api repos/$REPO/actions/artifacts/$ART_ID --jq '.workflow_run.id')
-          
+
           echo "need_build=false" >> $GITHUB_OUTPUT
           echo "artifact_id=$ART_ID" >> $GITHUB_OUTPUT
           echo "build_run_id=$BUILD_RUN_ID" >> $GITHUB_OUTPUT
@@ -88,7 +88,7 @@ jobs:
           if [ "${{ needs.prepare.outputs.need_build }}" = "true" ]; then
             # Build was triggered - find and wait for its workflow run
             TARGET_SHA="${{ needs.prepare.outputs.sha }}"
-            
+
             echo "Waiting for build workflow to start..."
             for i in {1..30}; do
               BUILD_RUN_ID=$(gh api repos/$REPO/actions/workflows/build.yml/runs \
@@ -97,24 +97,24 @@ jobs:
                       | select(.head_sha == "'"$TARGET_SHA"'" and .status != "completed")
                       | .id' \
                 | head -n 1)
-              
+
               if [ -n "$BUILD_RUN_ID" ]; then
                 echo "Found build run: $BUILD_RUN_ID"
                 break
               fi
-              
+
               sleep 2
             done
-            
+
             if [ -z "$BUILD_RUN_ID" ]; then
               echo "Error: Could not find build run for SHA $TARGET_SHA"
               exit 1
             fi
-            
+
             # Wait for the build to complete
             echo "Waiting for build run $BUILD_RUN_ID to complete..."
             gh run watch $BUILD_RUN_ID --repo $REPO --exit-status
-            
+
             echo "BUILD_RUN_ID=$BUILD_RUN_ID" >> $GITHUB_ENV
           else
             echo "BUILD_RUN_ID=${{ needs.prepare.outputs.build_run_id }}" >> $GITHUB_ENV
