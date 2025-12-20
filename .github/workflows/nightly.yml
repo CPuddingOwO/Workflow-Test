@@ -25,11 +25,6 @@ jobs:
       need_build: ${{ steps.resolve.outputs.need_build }}
 
     steps:
-      - name: Authenticate gh CLI
-        run: echo "${GH_TOKEN}" | gh auth login --with-token
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-
       - name: Resolve main HEAD SHA
         id: sha
         env:
