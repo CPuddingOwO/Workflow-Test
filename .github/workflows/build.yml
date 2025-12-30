@@ -18,7 +18,6 @@ jobs:
   build:
     name: Build (${{ matrix.target }})
     runs-on: ${{ matrix.os }}
-
     strategy:
       fail-fast: false
       matrix:
@@ -40,7 +39,7 @@ jobs:
         shell: bash
         run: |
           mkdir -p dist/${{ matrix.target }}
-          echo "commit: $GITHUB_SHA" > dist/${{ matrix.target }}/commit.txt
+          echo "commit: ${{ inputs.ref || github.sha }}" > dist/${{ matrix.target }}/commit.txt
           echo "target: ${{ matrix.target }}" > dist/${{ matrix.target }}/target.txt
 
       - name: Archive build (ZIP)
@@ -52,6 +51,7 @@ jobs:
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
-          name: build-${{ github.sha }}-${{ matrix.target }}
+          # 使用 inputs.ref 确保 Nightly/Publish 能精准匹配下载
+          name: build-${{ inputs.ref || github.sha }}-${{ matrix.target }}
           path: ${{ matrix.target }}.zip
           retention-days: 14

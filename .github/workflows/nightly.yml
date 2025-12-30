@@ -19,19 +19,14 @@ jobs:
       need_build: ${{ steps.resolve.outputs.need_build }}
 
     steps:
-      - name: Resolve main HEAD SHA
+      - name: Resolve SHA
         id: sha
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          REPO: ${{ github.repository }}
         run: |
-          # Use the commit that triggered the workflow, or main HEAD for schedule
-          if [ "${{ github.event_name }}" == "push" ]; then
-            echo "sha=${{ github.sha }}" >> $GITHUB_OUTPUT
-          else
-            SHA=$(gh api repos/$REPO/branches/main --jq '.commit.sha')
-            echo "sha=$SHA" >> $GITHUB_OUTPUT
-          fi
+          # 定时任务通常取 main HEAD
+          SHA=$(gh api repos/${{ github.repository }}/branches/main --jq '.commit.sha')
+          echo "sha=$SHA" >> $GITHUB_OUTPUT
 
       - name: Resolve existing Build run
         id: resolve
@@ -40,27 +35,22 @@ jobs:
           REPO: ${{ github.repository }}
           TARGET_SHA: ${{ steps.sha.outputs.sha }}
         run: |
-          # Find latest successful run for the commit on 'build.yml'
-          # This is more robust than searching artifacts directly
           RUN_ID=$(gh run list --repo $REPO \
             --workflow build.yml \
             --commit $TARGET_SHA \
             --status success \
             --limit 1 \
-            --json databaseId \
-            --jq '.[0].databaseId')
+            --json databaseId --jq '.[0].databaseId')
 
           if [ -z "$RUN_ID" ]; then
-            echo "No existing build found for SHA $TARGET_SHA"
             echo "need_build=true" >> $GITHUB_OUTPUT
           else
-            echo "Found existing build run: $RUN_ID"
             echo "need_build=false" >> $GITHUB_OUTPUT
             echo "build_run_id=$RUN_ID" >> $GITHUB_OUTPUT
           fi
 
   build:
-    name: Trigger Build (if needed)
+    name: Trigger Build
     needs: prepare
     if: needs.prepare.outputs.need_build == 'true'
     uses: ./.github/workflows/build.yml
@@ -70,29 +60,27 @@ jobs:
   nightly:
     name: Nightly Release
     needs: [prepare, build]
-    runs-on: ubuntu-latest
-    # Run if prepare succeeded, and build either succeeded (ran) or was skipped (already built)
+    # 只要 prepare 成功且 build 没有失败（成功或被跳过）就执行
     if: always() && needs.prepare.result == 'success' && (needs.build.result == 'success' || needs.build.result == 'skipped')
-
+    runs-on: ubuntu-latest
     steps:
       - name: Download build artifacts
         uses: actions/download-artifact@v4
         with:
-          # If 'build' job was skipped, we download from the found external run ID.
-          # If 'build' job ran, we download from the current workflow run (github.run_id).
+          # 如果 build 任务被跳过，说明有现成的，去那个 run_id 下；否则就在当前 run 下载
           run-id: ${{ needs.build.result == 'skipped' && needs.prepare.outputs.build_run_id || github.run_id }}
           pattern: "build-${{ needs.prepare.outputs.sha }}-*"
+          merge-multiple: true
           github-token: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Delete old Nightly Release
+      - name: Manage Release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          REPO: ${{ github.repository }}
         run: |
-          echo "Deleting existing 'nightly' release and tag..."
-          # Deleting the release with --cleanup-tag removes both the release and the tag.
-          # This effectively cleans up all old artifacts.
-          gh release delete nightly --repo $REPO --cleanup-tag -y || true
+          gh release delete nightly --repo ${{ github.repository }} --cleanup-tag -y || true
+          
+          # 简单的文件整理（可选，取决于你下载后的目录结构）
+          ls -R
 
       - name: Create Nightly Release
         uses: softprops/action-gh-release@v2
@@ -100,7 +88,6 @@ jobs:
           tag_name: nightly
           target_commitish: ${{ needs.prepare.outputs.sha }}
           name: Nightly Build ${{ needs.prepare.outputs.sha }}
-          body: "Nightly build for commit ${{ needs.prepare.outputs.sha }}"
+          body: "Automatic nightly build for commit ${{ needs.prepare.outputs.sha }}"
           prerelease: true
-          files: |
-            build-*/**
+          files: "*.zip"
