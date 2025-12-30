@@ -24,18 +24,25 @@ jobs:
   prepare:
     name: Resolve Build Artifact
     runs-on: ubuntu-latest
-
     outputs:
       sha: ${{ steps.sha.outputs.sha }}
       build_run_id: ${{ steps.resolve.outputs.build_run_id }}
       need_build: ${{ steps.resolve.outputs.need_build }}
 
     steps:
-      - name: Resolve target SHA
+      - name: Resolve main HEAD SHA
         id: sha
-        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
         run: |
-          echo "sha=${{ inputs.ref }}" >> $GITHUB_OUTPUT
+          # Use the commit that triggered the workflow, or main HEAD for schedule
+          if [ "${{ github.event_name }}" == "push" ]; then
+            echo "sha=${{ github.sha }}" >> $GITHUB_OUTPUT
+          else
+            SHA=$(gh api repos/$REPO/branches/main --jq '.commit.sha')
+            echo "sha=$SHA" >> $GITHUB_OUTPUT
+          fi
 
       - name: Resolve existing Build run
         id: resolve
@@ -43,29 +50,25 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           REPO: ${{ github.repository }}
           TARGET_SHA: ${{ steps.sha.outputs.sha }}
-        shell: bash
         run: |
-          set -e
+          # Find latest successful run for the commit on 'build.yml'
+          # This is more robust than searching artifacts directly
+          RUN_ID=$(gh run list --repo $REPO \
+            --workflow build.yml \
+            --commit $TARGET_SHA \
+            --status success \
+            --limit 1 \
+            --json databaseId \
+            --jq '.[0].databaseId')
 
-          # 1. Look for artifact by SHA
-          ART_ID=$(gh api repos/$REPO/actions/artifacts \
-            -f per_page=50 \
-            --jq '.artifacts[]
-                  | select(.name | startswith("build-'"$TARGET_SHA"'"))
-                  | .id' \
-            | head -n 1)
-
-          if [ -z "$ART_ID" ]; then
+          if [ -z "$RUN_ID" ]; then
+            echo "No existing build found for SHA $TARGET_SHA"
             echo "need_build=true" >> $GITHUB_OUTPUT
-            exit 0
+          else
+            echo "Found existing build run: $RUN_ID"
+            echo "need_build=false" >> $GITHUB_OUTPUT
+            echo "build_run_id=$RUN_ID" >> $GITHUB_OUTPUT
           fi
-
-          # 2. Get the workflow run ID from the artifact
-          BUILD_RUN_ID=$(gh api repos/$REPO/actions/artifacts/$ART_ID --jq '.workflow_run.id')
-
-          echo "need_build=false" >> $GITHUB_OUTPUT
-          echo "artifact_id=$ART_ID" >> $GITHUB_OUTPUT
-          echo "build_run_id=$BUILD_RUN_ID" >> $GITHUB_OUTPUT
 
 
   build:
