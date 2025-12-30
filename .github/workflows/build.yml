@@ -43,10 +43,15 @@ jobs:
           echo "commit: $GITHUB_SHA" > dist/${{ matrix.target }}/commit.txt
           echo "target: ${{ matrix.target }}" > dist/${{ matrix.target }}/target.txt
 
+      - name: Archive build (ZIP)
+        shell: bash
+        run: |
+          cd dist
+          7z a ../${{ matrix.target }}.zip ${{ matrix.target }}/
+
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
           name: build-${{ github.sha }}-${{ matrix.target }}
-          path: dist/${{ matrix.target }}
+          path: ${{ matrix.target }}.zip
           retention-days: 14
-
