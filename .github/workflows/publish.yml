@@ -85,5 +85,10 @@ jobs:
           tag_name: ${{ inputs.tag }}
           name: ${{ inputs.title || inputs.tag }}
           target_commitish: ${{ needs.prepare.outputs.sha }}
+          # 核心配置：自动生成发布摘要
+          generate_release_notes: true
+          # 如果你想手动把 CHANGELOG.md 的内容也塞进去，可以开启下面这两行：
+          # body_path: CHANGELOG.md
+          # append_body: true
           prerelease: false
           files: "*.zip"
